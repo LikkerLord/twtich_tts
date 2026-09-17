@@ -573,15 +573,34 @@ async def main():
 
 
 # ------------------------------ System tray -----------------------------------
+def _subprocess_env():
+    """Environment for spawning external (non-bundled) programs. A frozen
+    PyInstaller app overrides LD_LIBRARY_PATH/DYLD_LIBRARY_PATH so its own
+    bundled shared libs (often older than the system's) take priority for
+    itself - but that leaks into any subprocess we spawn too, breaking system
+    tools like xdg-open/kde-open that need the SYSTEM's newer libs (e.g.
+    libstdc++). PyInstaller's bootloader stashes the pre-override value in
+    *_ORIG for exactly this case."""
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False):
+        for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+            orig = env.pop(f"{var}_ORIG", None)
+            if orig is not None:
+                env[var] = orig
+            else:
+                env.pop(var, None)
+    return env
+
+
 def _open_path(path):
     """Open a file/folder with the OS's default handler."""
     try:
         if sys.platform == "win32":
             os.startfile(path)  # noqa: S606
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path)])
+            subprocess.Popen(["open", str(path)], env=_subprocess_env())
         else:
-            subprocess.Popen(["xdg-open", str(path)])
+            subprocess.Popen(["xdg-open", str(path)], env=_subprocess_env())
     except Exception as e:
         print(f"[tray] couldn't open {path}: {e}")
 
