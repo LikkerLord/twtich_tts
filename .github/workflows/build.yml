@@ -30,7 +30,7 @@ jobs:
 
       - name: Linux audio libs
         if: matrix.name == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 xvfb
 
       - name: Install dependencies (CPU-only torch keeps the size down)
         run: |
@@ -38,8 +38,19 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install pyinstaller pocket-tts numpy sounddevice websockets aiohttp certifi pystray pillow
 
+      # pystray's Linux backend opens an X display as soon as it's imported,
+      # which fails outright on a headless runner (no DISPLAY) and makes
+      # PyInstaller skip bundling its xorg backend module. xvfb-run gives it a
+      # virtual display just for this step so the import (and collection)
+      # succeeds; Windows/macOS don't need this.
       - name: Freeze with PyInstaller
-        run: pyinstaller packaging/tts_bot.spec --noconfirm
+        shell: bash
+        run: |
+          if [ "${{ matrix.name }}" = "linux" ]; then
+            xvfb-run -a pyinstaller packaging/tts_bot.spec --noconfirm
+          else
+            pyinstaller packaging/tts_bot.spec --noconfirm
+          fi
 
       # -------- Windows: Inno Setup installer, then sign if a cert is configured --------
       - name: Windows installer
