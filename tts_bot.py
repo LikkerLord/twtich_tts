@@ -90,8 +90,10 @@ if getattr(sys, "frozen", False):
         if not _dst.exists() and (_RES_DIR / _fn).exists():
             shutil.copy(_RES_DIR / _fn, _dst)
     print(f"Config folder: {APP_DIR}")
+    TEST_HTML_PATH = _RES_DIR / "test.html"
 else:
     APP_DIR = Path(__file__).parent
+    TEST_HTML_PATH = APP_DIR / "test.html"
 
 CONFIG_FILE = APP_DIR / "config.json"
 ABBR_FILE = APP_DIR / "abbreviations.json"
@@ -574,12 +576,14 @@ def run_tray():
     """Blocking: runs the tray icon on the calling (main) thread."""
     import pystray
 
+    def on_open_panel(icon, item):
+        _open_path(TEST_HTML_PATH)
+
     def on_open_config(icon, item):
         _open_path(APP_DIR)
 
-    def on_open_log(icon, item):
-        if LOG_FILE and LOG_FILE.exists():
-            _open_path(LOG_FILE)
+    def on_open_log_folder(icon, item):
+        _open_path(APP_DIR)
 
     def on_skip(icon, item):
         if _loop:
@@ -595,11 +599,10 @@ def run_tray():
 
     items = [
         pystray.MenuItem(f"Twitch TTS Bot ({MODE} mode)", None, enabled=False),
+        pystray.MenuItem("Open TTS panel", on_open_panel),
         pystray.MenuItem("Open config folder", on_open_config),
-    ]
-    if LOG_FILE:
-        items.append(pystray.MenuItem("Open log file", on_open_log))
-    items += [
+        pystray.MenuItem("Open log folder", on_open_log_folder),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem("Skip current", on_skip),
         pystray.MenuItem("Clear queue", on_clear),
         pystray.Menu.SEPARATOR,

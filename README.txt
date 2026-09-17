@@ -63,7 +63,8 @@ Edit config.json (annotated; // lines are comments), save, restart the bot.
   filters         optional anti-abuse filters (repeats, spam, copypasta)
   firebot_actions optional: run a Firebot preset when a filter fires
   show_tray_icon  true (default): also show a system-tray icon with
-                  Open config folder / Skip / Clear / Quit
+                  Open TTS panel / Open config folder / Open log folder /
+                  Skip / Clear / Quit
 
 Control (works in both modes)
 -----------------------------
