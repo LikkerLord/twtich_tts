@@ -22,6 +22,20 @@ for pkg in ("torch", "pocket_tts", "sentencepiece", "sounddevice", "aiohttp", "c
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 
+if sys.platform.startswith("linux"):
+    # pystray's AppIndicator backend (real StatusNotifierItem tray icon,
+    # works on KDE/GNOME under both X11 and Wayland) needs these gi.repository
+    # modules; PyInstaller's built-in gi hooks bundle their typelibs/.so's
+    # once they're referenced here. Harmless if AppIndicator wasn't installed
+    # at build time (PyInstaller's hook just no-ops).
+    hiddenimports += [
+        "gi.repository.Gtk",
+        "gi.repository.GLib",
+        "gi.repository.GObject",
+        "gi.repository.AyatanaAppIndicator3",
+        "gi.repository.AppIndicator3",
+    ]
+
 # Editable defaults shipped inside the app (seeded to a user folder on first run).
 datas += [
     (root("config.json"), "."),

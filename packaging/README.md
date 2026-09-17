@@ -65,14 +65,23 @@ around it).
   stack, not a bug. The model itself still downloads on first run (needs
   internet once), then runs offline.
 - **The AppImage and tray icon are placeholders visually** - both use a
-  generated colored-circle icon, not real artwork. Swap `_tray_icon_image()`
-  in `tts_bot.py` and the icon-drawing step in the workflow for real assets
-  whenever you have them.
-- **pystray's Linux backend** needs either `python-xlib` (installed
-  automatically via pip on Linux, works under X11/XWayland) or a
-  system-installed AppIndicator (`gi`/`AppIndicator3`, not pip-installable).
-  On a pure-Wayland session without XWayland, the tray icon may not appear;
-  the bot still runs fine as a console app in that case (or set
+  generated icon, not real artwork. Swap `_tray_icon_image()` in `tts_bot.py`
+  and the icon-drawing step in the workflow for real assets whenever you have
+  them.
+- **Linux tray backend: AppIndicator, not the legacy X11 tray protocol.**
+  pystray tries AppIndicator first, then GTK, then falls back to a raw
+  Xorg/XEmbed tray icon. That Xorg fallback is what you get if AppIndicator
+  isn't available, and it's basically non-functional on modern KDE/GNOME -
+  especially under Wayland, where it can show a blank, unresponsive icon
+  with no menu (no real system-tray protocol on Wayland besides
+  StatusNotifierItem, which XEmbed doesn't speak). The Linux CI job installs
+  `gir1.2-gtk-3.0` + `gir1.2-ayatanaappindicator3-0.1` and builds `PyGObject`
+  from pip so the frozen app uses the real AppIndicator/StatusNotifierItem
+  backend instead, which works on both X11 and Wayland. If a future CI image
+  drops those apt packages (or the PyGObject build breaks) it silently falls
+  back to the broken Xorg backend rather than failing the build - check the
+  freeze log for `Failed to collect submodules for 'pystray'` as a sign that
+  happened. The bot still runs fine as a console app either way (or set
   `"show_tray_icon": false`).
 - **Virtual audio device can't be bundled.** BlackHole (macOS) and VB-CABLE
   (Windows) are drivers the user installs themselves; the installer only links
