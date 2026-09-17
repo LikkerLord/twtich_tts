@@ -648,7 +648,9 @@ if __name__ == "__main__":
             import pystray  # noqa: F401
             tray_available = True
         except Exception:
-            print("[tray] pystray not available, running as a plain console app")
+            print("[tray] pystray not available, running as a plain console app:")
+            import traceback
+            traceback.print_exc()
 
     if tray_available:
         worker = threading.Thread(target=lambda: asyncio.run(main()), daemon=True)
@@ -658,7 +660,9 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             print("\nStopped.")
         except Exception as e:
-            print(f"[tray] unavailable ({e}), continuing without it")
+            print(f"[tray] unavailable ({e}), continuing without it:")
+            import traceback
+            traceback.print_exc()
             worker.join()
     else:
         try:
