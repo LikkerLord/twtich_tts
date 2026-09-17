@@ -404,6 +404,27 @@ tts_model = TTSModel.load_model(language=LANGUAGE)
 print(f"Loading voice: {VOICE}")
 voice_state = tts_model.get_state_for_audio_prompt(VOICE)
 SAMPLE_RATE = tts_model.sample_rate
+
+
+def _pick_playback_rate():
+    """Some output devices (typically a raw ALSA device, not going through
+    PipeWire/PulseAudio's automatic resampling) reject the TTS model's native
+    sample rate outright (PortAudio error -9997 "Invalid sample rate").
+    Detect that once at startup and resample instead of failing every line."""
+    try:
+        sd.check_output_settings(device=OUTPUT_DEVICE, samplerate=SAMPLE_RATE)
+        return SAMPLE_RATE
+    except Exception:
+        pass
+    try:
+        rate = int(sd.query_devices(OUTPUT_DEVICE, "output")["default_samplerate"])
+        print(f"[audio] output device doesn't support {SAMPLE_RATE} Hz, resampling to {rate} Hz")
+        return rate
+    except Exception:
+        return SAMPLE_RATE
+
+
+PLAYBACK_SAMPLE_RATE = _pick_playback_rate()
 print(f"Pocket TTS ready. Mode: {MODE} | Output: {OUTPUT_DEVICE or 'default'}")
 
 speech_queue: asyncio.Queue = asyncio.Queue()
@@ -424,12 +445,24 @@ async def _drain_queue():
     return dropped
 
 
+def _resample_linear(data, orig_rate, target_rate):
+    if orig_rate == target_rate or len(data) == 0:
+        return data
+    duration = len(data) / orig_rate
+    n_target = max(1, int(round(duration * target_rate)))
+    x_orig = np.linspace(0, duration, num=len(data), endpoint=False)
+    x_target = np.linspace(0, duration, num=n_target, endpoint=False)
+    return np.interp(x_target, x_orig, data).astype("float32")
+
+
 def speak_blocking(text):
     audio = tts_model.generate_audio(voice_state, text)
     data = np.clip(audio.numpy(), -1.0, 1.0).astype("float32")
     pad = np.zeros(int(SAMPLE_RATE * TAIL_PADDING_SECONDS), dtype="float32")
     data = np.concatenate([data, pad])
-    sd.play(data, samplerate=SAMPLE_RATE, device=OUTPUT_DEVICE)
+    if PLAYBACK_SAMPLE_RATE != SAMPLE_RATE:
+        data = _resample_linear(data, SAMPLE_RATE, PLAYBACK_SAMPLE_RATE)
+    sd.play(data, samplerate=PLAYBACK_SAMPLE_RATE, device=OUTPUT_DEVICE)
     sd.wait()
 
 
