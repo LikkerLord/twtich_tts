@@ -40,7 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libportaudio2 xvfb \
             libgirepository1.0-dev gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 \
-            gcc pkg-config libcairo2-dev libglib2.0-dev
+            gcc pkg-config libcairo2-dev libglib2.0-dev libffi-dev
 
       - name: Install dependencies (CPU-only torch keeps the size down)
         run: |
@@ -50,9 +50,13 @@ jobs:
 
       # PyGObject needs the system dev headers installed above; only Linux
       # needs it (pystray's Windows/macOS backends don't touch gi at all).
+      # Pinned to <3.52: 3.52+ requires the newer "girepository-2.0" pkg-config
+      # name, which Ubuntu 22.04's gobject-introspection doesn't provide (only
+      # the legacy girepository-1.0 from libgirepository1.0-dev above). 3.50.2
+      # is the last release built against that legacy name.
       - name: Install PyGObject (Linux tray backend)
         if: matrix.name == 'linux'
-        run: pip install pygobject
+        run: pip install "pygobject==3.50.2"
 
       # pystray resolves its backend at `import pystray` time. With gi/GTK/
       # AppIndicator now installed, that succeeds via the AppIndicator
