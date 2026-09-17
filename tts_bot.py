@@ -71,6 +71,28 @@ def _user_config_dir():
     return base / "twitch-tts-bot"
 
 
+class _Tee:
+    """Writes to every given stream, skipping any that are None (e.g. a
+    windowed Windows build has no real sys.stdout) or that error out."""
+
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, data):
+        for s in self._streams:
+            try:
+                s.write(data)
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+
 LOG_FILE = None
 if getattr(sys, "frozen", False):
     # Installed/frozen app: keep editable config + JSON in a per-user folder,
@@ -78,13 +100,15 @@ if getattr(sys, "frozen", False):
     _RES_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     APP_DIR = _user_config_dir()
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    if sys.stdout is None:
-        # Windowed build (no console): there's nowhere for print() to go, so
-        # redirect to a log file instead of crashing on the first print.
-        LOG_FILE = APP_DIR / "tts_bot.log"
-        _log_fh = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
-        sys.stdout = _log_fh
-        sys.stderr = _log_fh
+    # Always keep a log file, on every OS - not just when sys.stdout is None
+    # (that only happens on windowed Windows builds; on Linux/macOS a
+    # console=False build can still have a real, just-not-visible stdout, so
+    # a crash there would otherwise vanish with nothing to inspect). Tee so a
+    # terminal launch still shows live output too.
+    LOG_FILE = APP_DIR / "tts_bot.log"
+    _log_fh = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
+    sys.stdout = _Tee(sys.stdout, _log_fh)
+    sys.stderr = _Tee(sys.stderr, _log_fh)
     for _fn in ("config.json", "abbreviations.json", "emotes.json"):
         _dst = APP_DIR / _fn
         if not _dst.exists() and (_RES_DIR / _fn).exists():
