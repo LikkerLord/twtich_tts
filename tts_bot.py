@@ -644,6 +644,24 @@ def run_tray():
 if __name__ == "__main__":
     tray_available = False
     if SHOW_TRAY_ICON:
+        if sys.platform not in ("win32", "darwin"):
+            # Work around a pystray bug (its notify_dbus helper calls
+            # gi.require_version('DBus', '1.0') for a namespace that doesn't
+            # exist on any distro and is never actually used afterwards -
+            # only GLib/Gio are - which otherwise kills the whole
+            # AppIndicator backend with "Namespace DBus not available").
+            try:
+                import gi
+                _orig_require_version = gi.require_version
+
+                def _require_version(namespace, version):
+                    if namespace == "DBus":
+                        return
+                    return _orig_require_version(namespace, version)
+
+                gi.require_version = _require_version
+            except Exception:
+                pass
         try:
             import pystray  # noqa: F401
             tray_available = True
