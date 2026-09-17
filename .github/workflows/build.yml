@@ -28,9 +28,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Linux audio libs
+      # gir1.2-ayatanaappindicator3-0.1 / gir1.2-gtk-3.0 let pystray use the
+      # AppIndicator backend (real StatusNotifierItem, works on KDE/GNOME,
+      # X11 and Wayland) instead of falling back to its legacy Xorg/XEmbed
+      # backend, which is basically non-functional under Wayland (blank icon,
+      # no click/menu). The rest (libgirepository1.0-dev, pkg-config, gcc,
+      # libcairo2-dev, libglib2.0-dev) are needed to build PyGObject from pip.
+      - name: Linux audio + tray libs
         if: matrix.name == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2 xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libportaudio2 xvfb \
+            libgirepository1.0-dev gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 \
+            gcc pkg-config libcairo2-dev libglib2.0-dev
 
       - name: Install dependencies (CPU-only torch keeps the size down)
         run: |
@@ -38,16 +48,21 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install pyinstaller pocket-tts numpy sounddevice websockets aiohttp certifi pystray pillow
 
-      # pystray's Linux backend opens an X display as soon as it's imported,
-      # which fails outright on a headless runner (no DISPLAY) and makes
-      # PyInstaller skip bundling its xorg backend module. xvfb-run gives it a
-      # virtual display just for this step so the import (and collection)
-      # succeeds; Windows/macOS don't need this.
+      # PyGObject needs the system dev headers installed above; only Linux
+      # needs it (pystray's Windows/macOS backends don't touch gi at all).
+      - name: Install PyGObject (Linux tray backend)
+        if: matrix.name == 'linux'
+        run: pip install pygobject
+
+      # pystray resolves its backend at `import pystray` time. With gi/GTK/
+      # AppIndicator now installed, that succeeds via the AppIndicator
+      # backend and never touches the broken Xorg fallback, so no xvfb is
+      # needed here anymore either.
       - name: Freeze with PyInstaller
         shell: bash
         run: |
           if [ "${{ matrix.name }}" = "linux" ]; then
-            xvfb-run -a pyinstaller packaging/tts_bot.spec --noconfirm
+            pyinstaller packaging/tts_bot.spec --noconfirm
           else
             pyinstaller packaging/tts_bot.spec --noconfirm
           fi
