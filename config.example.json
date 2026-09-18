@@ -71,6 +71,12 @@
     "collapse_word_repeats": true,
     "max_word_repeats": 3,
 
+    // Collapse a repeated multi-word phrase (2..max_phrase_words words) the
+    // same way, e.g. "go team go team go team go team" -> "go team go team":
+    "collapse_phrase_repeats": true,
+    "max_phrase_words": 4,
+    "max_phrase_repeats": 3,
+
     // Skip a whole message when one word dominates it (word spam). Off by
     // default. Only kicks in from spam_min_words up, when a single word is
     // at least spam_ratio (0.6 = 60%) of all words in the message.
@@ -81,8 +87,16 @@
     // Skip a message that contains a single very long "word". 0 = off.
     "max_word_length": 0,
 
-    // Skip a message identical to that user's previous one (copypasta). Off.
-    "block_repeated_messages": false
+    // Skip a message identical to that user's previous one. Off.
+    "block_repeated_messages": false,
+
+    // Skip a message once copypasta_flood_min_users different chatters have
+    // sent that exact same message within the trailing window (raid/spam
+    // copypasta) - keeps the bot from reading the same line over and over.
+    // Off by default.
+    "block_copypasta_flood": false,
+    "copypasta_flood_window_seconds": 20,
+    "copypasta_flood_min_users": 3
   },
 
   // ---- Optional: trigger a Firebot action when a filter fires ----

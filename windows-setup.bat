@@ -6,14 +6,23 @@ echo   Twitch TTS Bot - setup (Windows)
 echo ============================================
 echo.
 
-REM Prefer Python 3.12, then 3.11 (PyTorch has no 3.14 build yet).
+REM Prefer the newest Python PyTorch supports (3.10-3.14).
 set "PYCMD="
-py -3.12 --version >nul 2>&1 && set "PYCMD=py -3.12"
+py -3.14 --version >nul 2>&1 && set "PYCMD=py -3.14"
+if not defined PYCMD (
+  py -3.13 --version >nul 2>&1 && set "PYCMD=py -3.13"
+)
+if not defined PYCMD (
+  py -3.12 --version >nul 2>&1 && set "PYCMD=py -3.12"
+)
 if not defined PYCMD (
   py -3.11 --version >nul 2>&1 && set "PYCMD=py -3.11"
 )
 if not defined PYCMD (
-  echo Python 3.12 or 3.11 was not found.
+  py -3.10 --version >nul 2>&1 && set "PYCMD=py -3.10"
+)
+if not defined PYCMD (
+  echo Python 3.10-3.14 was not found.
   echo Install it from https://www.python.org/downloads/
   echo During install, tick "Add Python to PATH".
   pause
@@ -29,7 +38,9 @@ call "%USERPROFILE%\tts-bot\Scripts\activate.bat"
 
 echo Installing packages (PyTorch is large; this may take a while) ...
 python -m pip install --upgrade pip
-pip install pocket-tts numpy sounddevice websockets aiohttp certifi pystray pillow
+pip install -r requirements.txt
+
+if not exist config.json copy config.example.json config.json
 
 echo.
 echo Pre-downloading model + default voice ...

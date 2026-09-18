@@ -6,13 +6,13 @@ echo "================================================"
 echo "   Twitch TTS Bot - setup (macOS)"
 echo "================================================"
 
-# Prefer Python 3.12, then 3.11 (PyTorch has no 3.14 build yet).
+# Prefer the newest Python PyTorch supports (3.10-3.14).
 PY=""
-for c in python3.12 python3.11; do
+for c in python3.14 python3.13 python3.12 python3.11 python3.10; do
   command -v "$c" >/dev/null 2>&1 && PY="$c" && break
 done
 if [ -z "$PY" ]; then
-  echo "Python 3.12 or 3.11 not found."
+  echo "Python 3.10-3.14 not found."
   echo "Install with Homebrew:  brew install python@3.12"
   echo "or from https://www.python.org/downloads/"
   read -n 1 -s -r -p "Press any key to close."; exit 1
@@ -23,7 +23,9 @@ echo "Using $PY ($($PY --version))"
 source "$HOME/tts-bot/bin/activate"
 echo "Installing packages (PyTorch is large; this may take a few minutes) ..."
 pip install --upgrade pip
-pip install pocket-tts numpy sounddevice websockets aiohttp certifi pystray pillow
+pip install -r requirements.txt
+
+[ -f config.json ] || cp config.example.json config.json
 
 if command -v brew >/dev/null 2>&1; then
   brew list blackhole-2ch >/dev/null 2>&1 || brew install blackhole-2ch \

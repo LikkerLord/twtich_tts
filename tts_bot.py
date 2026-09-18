@@ -53,7 +53,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 
 import numpy as np
@@ -109,15 +109,19 @@ if getattr(sys, "frozen", False):
     _log_fh = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
     sys.stdout = _Tee(sys.stdout, _log_fh)
     sys.stderr = _Tee(sys.stderr, _log_fh)
-    for _fn in ("config.json", "abbreviations.json", "emotes.json"):
-        _dst = APP_DIR / _fn
-        if not _dst.exists() and (_RES_DIR / _fn).exists():
-            shutil.copy(_RES_DIR / _fn, _dst)
+    for _dst_fn, _src_fn in (("config.json", "config.example.json"),
+                              ("abbreviations.json", "abbreviations.json"),
+                              ("emotes.json", "emotes.json")):
+        _dst = APP_DIR / _dst_fn
+        if not _dst.exists() and (_RES_DIR / _src_fn).exists():
+            shutil.copy(_RES_DIR / _src_fn, _dst)
     print(f"Config folder: {APP_DIR}")
     TEST_HTML_PATH = _RES_DIR / "test.html"
 else:
     APP_DIR = Path(__file__).parent
     TEST_HTML_PATH = APP_DIR / "test.html"
+    if not (APP_DIR / "config.json").exists() and (APP_DIR / "config.example.json").exists():
+        shutil.copy(APP_DIR / "config.example.json", APP_DIR / "config.json")
 
 CONFIG_FILE = APP_DIR / "config.json"
 ABBR_FILE = APP_DIR / "abbreviations.json"
@@ -255,13 +259,20 @@ F_COLLAPSE_CHARS = bool(_F.get("collapse_char_runs", True))
 F_MAX_CHAR_RUN = max(1, int(_F.get("max_char_run", 3)))
 F_COLLAPSE_WORDS = bool(_F.get("collapse_word_repeats", True))
 F_MAX_WORD_REPEATS = max(1, int(_F.get("max_word_repeats", 3)))
+F_COLLAPSE_PHRASES = bool(_F.get("collapse_phrase_repeats", True))
+F_MAX_PHRASE_WORDS = max(2, int(_F.get("max_phrase_words", 4)))
+F_MAX_PHRASE_REPEATS = max(1, int(_F.get("max_phrase_repeats", 3)))
 F_SKIP_SPAM = bool(_F.get("skip_word_spam", False))
 F_SPAM_MIN_WORDS = int(_F.get("spam_min_words", 6))
 F_SPAM_RATIO = float(_F.get("spam_ratio", 0.6))
 F_MAX_WORD_LENGTH = int(_F.get("max_word_length", 0))            # 0 = off
 F_BLOCK_REPEATS = bool(_F.get("block_repeated_messages", False))
+F_COPYPASTA_FLOOD = bool(_F.get("block_copypasta_flood", False))
+F_COPYPASTA_WINDOW = float(_F.get("copypasta_flood_window_seconds", 20))
+F_COPYPASTA_MIN_USERS = max(2, int(_F.get("copypasta_flood_min_users", 3)))
 
 _last_message: dict[str, str] = {}
+_copypasta_history: deque = deque()   # (timestamp, normalized_text, user)
 
 
 def _collapse_char_runs(text):
@@ -282,12 +293,59 @@ def _collapse_word_repeats(text):
     return " ".join(out)
 
 
+def _collapse_phrase_repeats(text):
+    # "go team go team go team go team" -> keep at most F_MAX_PHRASE_REPEATS
+    # repeats of a 2..F_MAX_PHRASE_WORDS-word phrase (single-word repeats are
+    # handled separately by _collapse_word_repeats).
+    words = text.split()
+    n = len(words)
+    out, i = [], 0
+    while i < n:
+        matched = False
+        longest = min(F_MAX_PHRASE_WORDS, (n - i) // 2)
+        # shortest period first: a longer length that's just a multiple of a
+        # shorter one (e.g. 4 words = two 2-word units) would "match" too but
+        # isn't the real repeating unit, so it wouldn't get collapsed enough.
+        for length in range(2, longest + 1):
+            phrase = [w.lower() for w in words[i:i + length]]
+            repeats, j = 1, i + length
+            while j + length <= n and [w.lower() for w in words[j:j + length]] == phrase:
+                repeats += 1
+                j += length
+            if repeats >= 2:
+                keep = min(repeats, F_MAX_PHRASE_REPEATS)
+                out.extend(words[i:i + length] * keep)
+                i = j
+                matched = True
+                break
+        if not matched:
+            out.append(words[i])
+            i += 1
+    return " ".join(out)
+
+
 def _is_word_spam(text):
     # True if one word makes up >= spam_ratio of a long-enough message
     words = [w.lower() for w in text.split()]
     if len(words) < F_SPAM_MIN_WORDS:
         return False
     return max(Counter(words).values()) / len(words) >= F_SPAM_RATIO
+
+
+def _is_copypasta_flood(text, user):
+    # True once F_COPYPASTA_MIN_USERS distinct chatters have sent the exact
+    # same message within the trailing window (raid/copypasta spam) - keeps
+    # the bot from reading the same line over and over during a flood.
+    now = time.monotonic()
+    while _copypasta_history and now - _copypasta_history[0][0] > F_COPYPASTA_WINDOW:
+        _copypasta_history.popleft()
+    norm = text.strip().lower()
+    if not norm:
+        return False
+    users = {u for ts, t, u in _copypasta_history if t == norm}
+    users.add(user)
+    _copypasta_history.append((now, norm, user))
+    return len(users) >= F_COPYPASTA_MIN_USERS
 
 
 # --------------------------- Firebot actions ---------------------------------
@@ -341,10 +399,18 @@ def apply_filters(text, user=""):
     if F_MAX_WORD_LENGTH > 0 and any(len(w) > F_MAX_WORD_LENGTH for w in text.split()):
         _fire_firebot("long_word", user, text)
         return None
+    if F_COPYPASTA_FLOOD and _is_copypasta_flood(text, user):
+        _fire_firebot("copypasta_flood", user, text)
+        return None
     if F_COLLAPSE_CHARS:
         collapsed = _collapse_char_runs(text)
         if collapsed != text:
             _fire_firebot("char_run", user, text)
+            text = collapsed
+    if F_COLLAPSE_PHRASES:
+        collapsed = _collapse_phrase_repeats(text)
+        if collapsed != text:
+            _fire_firebot("phrase_repeat", user, text)
             text = collapsed
     if F_COLLAPSE_WORDS:
         collapsed = _collapse_word_repeats(text)
@@ -375,7 +441,11 @@ def should_skip(user, text):
 
 
 def clean_text(text, user=""):
-    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)   # pocketTTS -> pocket TTS
+    # Split acronym-suffixed run-together words: "pocketTTS" -> "pocket TTS".
+    # Requires 2+ uppercase letters after the boundary so mixed-case chat
+    # noise like "loL"/"LoL" isn't shredded into fragments (which would
+    # otherwise dodge the lol/repeat-word filters below).
+    text = re.sub(r"(?<=[a-z])(?=[A-Z]{2})", " ", text)
     text = strip_custom_emotes(text)
     text = URL_RE.sub("link", text)
     text = text.strip()
