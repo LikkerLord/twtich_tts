@@ -4,13 +4,13 @@ echo "============================================"
 echo "   Twitch TTS Bot - setup (Linux)"
 echo "============================================"
 
-# Prefer Python 3.12, then 3.11 (PyTorch has no 3.14 build yet).
+# Prefer the newest Python PyTorch supports (3.10-3.14).
 PY=""
-for c in python3.12 python3.11; do
+for c in python3.14 python3.13 python3.12 python3.11 python3.10; do
   command -v "$c" >/dev/null 2>&1 && PY="$c" && break
 done
 if [ -z "$PY" ]; then
-  echo "Python 3.12 or 3.11 not found. Install it via your package manager:"
+  echo "Python 3.10-3.14 not found. Install one via your package manager:"
   echo "  Fedora/Nobara : sudo dnf install python3.12"
   echo "  Debian/Ubuntu : sudo apt install python3.12 python3.12-venv"
   exit 1
@@ -27,7 +27,9 @@ fi
 [ -d "$HOME/tts-bot" ] || "$PY" -m venv "$HOME/tts-bot"
 source "$HOME/tts-bot/bin/activate"
 pip install --upgrade pip
-pip install pocket-tts numpy sounddevice websockets aiohttp certifi pystray pillow
+pip install -r requirements.txt
+
+[ -f config.json ] || cp config.example.json config.json
 
 echo "Pre-downloading model + default voice ..."
 python -c "from pocket_tts import TTSModel; m=TTSModel.load_model(language='english'); m.get_state_for_audio_prompt('alba'); print('Model ready.')" \

@@ -36,13 +36,15 @@ if sys.platform.startswith("linux"):
         "gi.repository.AppIndicator3",
     ]
 
-# Editable defaults shipped inside the app (seeded to a user folder on first run).
+# Editable defaults shipped inside the app (seeded to a user folder on first
+# run - see the frozen-app bootstrap in tts_bot.py, which renames
+# config.example.json -> config.json when it copies it out).
 datas += [
-    (root("config.json"), "."),
+    (root("config.example.json"), "."),
     (root("abbreviations.json"), "."),
     (root("emotes.json"), "."),
     (root("test.html"), "."),
-    (root("README.txt"), "."),
+    (root("README.md"), "."),
 ]
 
 a = Analysis(
