@@ -67,7 +67,8 @@ Then write a message in your chat to test. Close the window / Ctrl+C to stop.
 Edit `config.json` (annotated; `//` lines are comments), save, restart the
 bot.
 
-- `mode` - `"twitch"` (read chat) or `"http"` (Firebot sends text)
+- `mode` - `"twitch"` (read chat) or `"http"` (Firebot, Mix It Up, or anything
+  else sends text)
 - `voice` - built-in voice (alba, anna, michael, vera, jane, ...)
 - `output_device` - see "Audio into OBS" above
 - `filters` - optional anti-abuse filters (repeated chars/words/phrases,
@@ -83,6 +84,36 @@ Firebot HTTP Request effect:
 
 - `http://127.0.0.1:5050/skip` - stop the current message, play the next
 - `http://127.0.0.1:5050/clear` - drop the whole queue and stop the current
+- `http://127.0.0.1:5050/tts` - speak text (`"http"` mode), see below
+
+### Using "http" mode with Mix It Up (or Firebot, or anything else)
+
+In `"http"` mode, `/tts` speaks whatever text it's given instead of reading
+Twitch chat directly - useful if you'd rather route messages through a bot
+you're already running (filters, moderation, commands) and just have it hand
+the final text to this one for voicing.
+
+`/tts` accepts:
+- `GET /tts?user=<name>&text=<message>`
+- `POST` with a JSON body: `{"user": "...", "text": "..."}`
+- `POST` with a form body: `user=...&text=...`
+- `POST` with any other body: the raw bytes are spoken as-is, with the
+  username (optional) passed as `?user=` in the URL instead.
+
+That last form exists because some bots can't escape the message text for
+you. **Mix It Up**'s "HTTP Custom Request" action builds the request body by
+substituting `$message` straight into whatever template you type, with no
+quote/backslash/newline escaping - so a chat message containing a `"` breaks
+a JSON body, and the command silently fails to speak. Avoid that entirely by
+sending the raw message as the POST body (no JSON, no escaping needed) and
+putting the username in the URL instead:
+
+- Command: **HTTP Custom Request**
+- Method: `POST`
+- URL: `http://127.0.0.1:5050/tts?user=$username`
+- Body: `$message`
+- Content Type: `text/plain` (anything other than
+  `application/json`/`application/x-www-form-urlencoded` works)
 
 ## Notes
 

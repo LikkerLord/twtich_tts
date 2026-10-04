@@ -8,7 +8,8 @@
  Output:    via 'sounddevice' to a named device (Mac: BlackHole, OBS captures it).
 
  config.json keys:
-   mode                "twitch" (read chat directly) or "http" (Firebot calls us)
+   mode                "twitch" (read chat directly) or "http" (Firebot, Mix It
+                       Up, or anything else POSTs/GETs text to us)
    channel             your Twitch channel, lowercase, no '#' (twitch mode)
    voice               built-in voice name, e.g. alba, anna, michael, vera, jane
    language            "english"
@@ -38,7 +39,18 @@
  Control endpoints (a small local server runs in BOTH modes):
    http://127.0.0.1:5050/skip    abort the current message, play the next
    http://127.0.0.1:5050/clear   drop the whole queue and abort the current
-   http://127.0.0.1:5050/tts     speak text (used by Firebot in "http" mode)
+   http://127.0.0.1:5050/tts     speak text (used in "http" mode)
+
+   /tts accepts:
+     GET  ?user=<name>&text=<message>
+     POST application/json       {"user": "...", "text": "..."}
+     POST form-urlencoded        user=...&text=...
+     POST anything else          the raw body is spoken as-is, username (if
+                                  any) via ?user= in the URL - use this from
+                                  tools that can't escape quotes/newlines into
+                                  JSON or a form body, e.g. Mix It Up's HTTP
+                                  Custom Request action: POST the raw $message
+                                  as the body with ?user=$username in the URL.
 ================================================================================
 """
 
@@ -605,16 +617,34 @@ async def run_http():
     from aiohttp import web
 
     async def handle_tts(request):
+        user = request.query.get("user", "")
         if request.method == "GET":
-            user = request.query.get("user", "")
             text = request.query.get("text", "")
-        else:
-            if request.content_type == "application/json":
+        elif request.content_type == "application/json":
+            try:
                 data = await request.json()
+            except (json.JSONDecodeError, ValueError):
+                # Bots like Mix It Up paste chat text into a JSON template
+                # with no escaping, so a stray quote/backslash in the message
+                # breaks the JSON. Fall back to the raw body as plain text.
+                data = {}
+                text = await request.text()
             else:
-                data = await request.post()
-            user = data.get("user", "")
+                user = data.get("user", user)
+                text = data.get("text", "")
+        elif request.content_type in (
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+        ):
+            data = await request.post()
+            user = data.get("user", user)
             text = data.get("text", "")
+        else:
+            # No structured encoding (e.g. Mix It Up's HTTP Custom Request,
+            # which can't escape the message for JSON/form bodies): treat the
+            # whole POST body as the literal text to speak, username via
+            # ?user= instead.
+            text = await request.text()
         user = str(user).strip().lower()
         text = str(text).strip()
         if not text or should_skip(user, text):
