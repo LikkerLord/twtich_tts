@@ -3,7 +3,9 @@
 ================================================================================
  Twitch TTS Bot  --  config-driven, runs as a system-tray app
 ================================================================================
- All settings live in config.json (next to this file). Edit that, then restart.
+ All settings live in config.json (next to this file). Change them on the
+ control panel's Settings tab (http://127.0.0.1:5050/), which applies them
+ right away, or edit the file by hand and use "Reload" on the panel or tray.
  Synthesis: Kyutai Pocket TTS (built-in voice, fully local after first download).
  Output:    via 'sounddevice' to a named device (Mac: BlackHole, OBS captures it).
 
@@ -33,10 +35,12 @@
  Run:
    python3 tts_bot.py
 
- Tray menu (when show_tray_icon is on): open the config folder, open the log
- file (frozen builds only), skip the current message, clear the queue, quit.
+ Tray menu (when show_tray_icon is on): open the control panel, reload the
+ config, open the config folder, open the log folder, skip the current
+ message, clear the queue, quit.
 
  Control endpoints (a small local server runs in BOTH modes):
+   http://127.0.0.1:5050/        control panel: test speech + edit settings
    http://127.0.0.1:5050/skip    abort the current message, play the next
    http://127.0.0.1:5050/clear   drop the whole queue and abort the current
    http://127.0.0.1:5050/tts     speak text (used in "http" mode)
@@ -51,6 +55,12 @@
                                   JSON or a form body, e.g. Mix It Up's HTTP
                                   Custom Request action: POST the raw $message
                                   as the body with ?user=$username in the URL.
+
+   Settings API (used by the panel, same-origin only):
+     GET  /api/config      schema, saved values, abbreviations, emotes
+     POST /api/config      {"values": {"dotted.key": value}, "abbreviations":
+                           {...}, "emotes": [...]} - validate, save, apply
+     POST /api/reload      re-read the files from disk and apply them
 ================================================================================
 """
 
@@ -128,10 +138,10 @@ if getattr(sys, "frozen", False):
         if not _dst.exists() and (_RES_DIR / _src_fn).exists():
             shutil.copy(_RES_DIR / _src_fn, _dst)
     print(f"Config folder: {APP_DIR}")
-    TEST_HTML_PATH = _RES_DIR / "test.html"
+    PANEL_HTML_PATH = _RES_DIR / "panel.html"
 else:
     APP_DIR = Path(__file__).parent
-    TEST_HTML_PATH = APP_DIR / "test.html"
+    PANEL_HTML_PATH = APP_DIR / "panel.html"
     if not (APP_DIR / "config.json").exists() and (APP_DIR / "config.example.json").exists():
         shutil.copy(APP_DIR / "config.example.json", APP_DIR / "config.json")
 
@@ -139,26 +149,13 @@ CONFIG_FILE = APP_DIR / "config.json"
 ABBR_FILE = APP_DIR / "abbreviations.json"
 EMOTE_FILE = APP_DIR / "emotes.json"
 
-DEFAULTS = {
-    "mode": "twitch",
-    "channel": "yourchannelname",
-    "voice": "alba",
-    "language": "english",
-    "output_device": None,
-    "read_username": True,
-    "username_format": "{user} says: {text}",
-    "min_chars": 1,
-    "max_chars": 300,
-    "cooldown_seconds": 0,
-    "tail_padding_seconds": 0.4,
-    "ignored_users": ["nightbot", "streamelements", "streamlabs", "moobot"],
-    "ignore_prefixes": ["!", "/"],
-    "filters": {},
-    "firebot_actions": {},
-    "http_host": "127.0.0.1",
-    "http_port": 5050,
-    "show_tray_icon": True,
-}
+class ConfigError(Exception):
+    pass
+
+
+def _strip_comments(raw):
+    # Drop whole-line // comments so config.json can be annotated.
+    return "\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("//"))
 
 
 def _load_json(path, default, allow_comments=False):
@@ -168,33 +165,389 @@ def _load_json(path, default, allow_comments=False):
     except FileNotFoundError:
         return default
     if allow_comments:
-        # Drop whole-line // comments so config.json can be annotated.
-        raw = "\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("//"))
+        raw = _strip_comments(raw)
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        raise SystemExit(f"{path.name} is not valid JSON: {e}")
+        raise ConfigError(f"{path.name} is not valid JSON: {e}")
+
+
+# ------------------------------ Config schema --------------------------------
+# Every key config.json understands, with its type, default and help text.
+# This drives loading/validation AND the settings page of the web panel.
+# "restart": the running bot only picks the value up after a restart; every
+# other key is applied live by a reload (web panel or tray menu).
+KNOWN_VOICES = ["alba", "anna", "michael", "vera", "jane", "eve", "george",
+                "mary", "paul", "charles"]
+FIREBOT_FILTERS = ["word_spam", "long_word", "repeated_message", "copypasta_flood",
+                   "char_run", "word_repeat", "phrase_repeat"]
+
+
+def _field(section, key, type_, default, label, help="", **extra):
+    return {"section": section, "key": key, "type": type_, "default": default,
+            "label": label, "help": help, **extra}
+
+
+CONFIG_SCHEMA = [
+    _field("General", "mode", "choice", "twitch", "Mode",
+           '"twitch" reads your Twitch chat directly. "http" only speaks text that '
+           "Firebot, Mix It Up, etc. send to /tts.",
+           choices=["twitch", "http"], restart=True),
+    _field("General", "channel", "str", "yourchannelname", "Twitch channel",
+           "Lowercase, no '#'. Twitch mode only."),
+    _field("General", "voice", "str", "alba", "Voice",
+           "Built-in Pocket TTS voice name.", suggest="voices"),
+    _field("General", "language", "str", "english", "Model language",
+           'Keep "english" unless you deliberately use another model.', restart=True),
+    _field("General", "output_device", "nullable_str", None, "Output device",
+           "Device name (substring match). Empty = system default. macOS: "
+           '"BlackHole 2ch", Windows: "CABLE Input".', suggest="devices"),
+    _field("General", "show_tray_icon", "bool", True, "Show tray icon",
+           "Run as a system-tray app instead of a plain console window.",
+           restart=True),
+
+    _field("Speech", "read_username", "bool", True, "Read username",
+           "Speak the sender's name before the message (twitch mode only)."),
+    _field("Speech", "username_format", "str", "{user} says: {text}", "Username format",
+           "How name and message are combined. Placeholders: {user} and {text}."),
+    _field("Speech", "min_chars", "int", 1, "Minimum characters",
+           "Skip messages shorter than this.", min=0),
+    _field("Speech", "max_chars", "int", 300, "Maximum characters",
+           "Shorten messages longer than this.", min=1),
+    _field("Speech", "cooldown_seconds", "float", 0, "Per-user cooldown (s)",
+           "Minimum seconds between spoken messages per user. 0 = off.", min=0),
+    _field("Speech", "tail_padding_seconds", "float", 0.4, "Tail padding (s)",
+           "Silence added after each message so the last word isn't clipped.",
+           min=0),
+    _field("Speech", "ignored_users", "list",
+           ["nightbot", "streamelements", "streamlabs", "moobot"], "Ignored users",
+           "Accounts whose messages are never read (one per line)."),
+    _field("Speech", "ignore_prefixes", "list", ["!", "/"], "Ignored prefixes",
+           "Messages starting with any of these are treated as commands and "
+           "skipped (one per line)."),
+
+    _field("Filters", "filters.collapse_char_runs", "bool", True, "Collapse character runs",
+           '"aaaaaa" -> "aaa", "!!!!!" -> "!!!".'),
+    _field("Filters", "filters.max_char_run", "int", 3, "Max character run", min=1),
+    _field("Filters", "filters.collapse_word_repeats", "bool", True, "Collapse repeated words",
+           '"lol lol lol lol lol" -> "lol lol lol".'),
+    _field("Filters", "filters.max_word_repeats", "int", 3, "Max word repeats", min=1),
+    _field("Filters", "filters.collapse_phrase_repeats", "bool", True,
+           "Collapse repeated phrases",
+           '"go team go team go team go team" -> "go team go team go team".'),
+    _field("Filters", "filters.max_phrase_words", "int", 4, "Max phrase length (words)",
+           min=2),
+    _field("Filters", "filters.max_phrase_repeats", "int", 3, "Max phrase repeats", min=1),
+    _field("Filters", "filters.skip_word_spam", "bool", False, "Skip word spam",
+           "Skip a message when one word makes up most of it."),
+    _field("Filters", "filters.spam_min_words", "int", 6, "Word spam: minimum words",
+           min=1),
+    _field("Filters", "filters.spam_ratio", "float", 0.6, "Word spam: ratio",
+           "0.6 = one word is at least 60% of all words.", min=0, max=1),
+    _field("Filters", "filters.max_word_length", "int", 0, "Max word length",
+           "Skip messages containing a longer word. 0 = off.", min=0),
+    _field("Filters", "filters.block_repeated_messages", "bool", False,
+           "Block repeated messages",
+           "Skip a message identical to that user's previous one."),
+    _field("Filters", "filters.block_copypasta_flood", "bool", False,
+           "Block copypasta floods",
+           "Skip a message once several chatters sent the exact same text "
+           "within the window."),
+    _field("Filters", "filters.copypasta_flood_window_seconds", "float", 20,
+           "Copypasta window (s)", min=0),
+    _field("Filters", "filters.copypasta_flood_min_users", "int", 3,
+           "Copypasta: minimum chatters", min=2),
+
+    _field("Firebot actions", "firebot_actions.enabled", "bool", False, "Enabled",
+           "Run a Firebot Preset Effect List when a filter fires."),
+    _field("Firebot actions", "firebot_actions.api_base", "str", "http://localhost:7472",
+           "Firebot API base"),
+    _field("Firebot actions", "firebot_actions.async", "bool", True, "Don't wait for effects",
+           "Fire and forget (recommended)."),
+    *[_field("Firebot actions", f"firebot_actions.presets.{name}", "str", "",
+             f"Preset: {name}", "Preset Effect List ID. Empty = no action.")
+      for name in FIREBOT_FILTERS],
+
+    _field("Server", "http_host", "str", "127.0.0.1", "HTTP host",
+           "Address the local server (this panel, /tts, /skip, /clear) listens on.",
+           restart=True),
+    _field("Server", "http_port", "int", 5050, "HTTP port", min=1, max=65535,
+           restart=True),
+]
+SCHEMA_BY_KEY = {f["key"]: f for f in CONFIG_SCHEMA}
+
+
+def _get_path(cfg, key):
+    for part in key.split("."):
+        if not isinstance(cfg, dict) or part not in cfg:
+            raise KeyError(key)
+        cfg = cfg[part]
+    return cfg
+
+
+def _coerce(field, value, strict):
+    """Convert a raw value to the field's type. strict=True (values coming
+    from the panel) rejects out-of-range numbers; strict=False (values read
+    from config.json) clamps them, like the bot always has."""
+    t = field["type"]
+    if t == "bool":
+        if isinstance(value, str) and not strict:
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        if not isinstance(value, (bool, int)):
+            raise ValueError("must be true or false")
+        return bool(value)
+    if t in ("int", "float"):
+        if isinstance(value, bool):
+            raise ValueError("must be a number")
+        try:
+            num = int(value) if t == "int" else float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"must be {'a whole number' if t == 'int' else 'a number'}")
+        lo, hi = field.get("min"), field.get("max")
+        if strict and ((lo is not None and num < lo) or (hi is not None and num > hi)):
+            raise ValueError(f"must be between {lo} and {hi}" if hi is not None
+                             else f"must be at least {lo}")
+        if lo is not None:
+            num = max(lo, num)
+        if hi is not None:
+            num = min(hi, num)
+        return num
+    if t == "list":
+        if not isinstance(value, list):
+            raise ValueError("must be a list")
+        return [str(v) for v in value if str(v).strip()]
+    if t == "nullable_str":
+        return (str(value).strip() or None) if value is not None else None
+    value = str(value) if value is not None else ""
+    if t == "choice" and value not in field["choices"]:
+        raise ValueError(f"must be one of: {', '.join(field['choices'])}")
+    if field["key"] == "username_format":
+        try:
+            value.format(user="u", text="t")
+        except (KeyError, IndexError, ValueError):
+            raise ValueError("only the placeholders {user} and {text} are allowed")
+    return value
+
+
+def _resolve_config(cfg):
+    """config.json contents -> {key: value} for every schema key, using the
+    default for missing/invalid values. Returns (values, warnings)."""
+    values, warnings = {}, []
+    for f in CONFIG_SCHEMA:
+        try:
+            raw = _get_path(cfg, f["key"])
+        except KeyError:
+            values[f["key"]] = f["default"]
+            continue
+        try:
+            values[f["key"]] = _coerce(f, raw, strict=False)
+        except ValueError as e:
+            warnings.append(f"{f['key']}: {e} - using default {f['default']!r}")
+            values[f["key"]] = f["default"]
+    return values, warnings
+
+
+def _read_config_file():
+    cfg = _load_json(CONFIG_FILE, {}, allow_comments=True)
+    if not isinstance(cfg, dict):
+        raise ConfigError("config.json must contain a JSON object")
+    return _resolve_config(cfg)
+
+
+_active: dict = {}    # key -> value currently in effect
+_startup: dict = {}   # values of the restart-only keys the bot started with
+
+
+def _apply_config(values):
+    """Make `values` (from _resolve_config) the running config. Restart-only
+    keys are kept at their startup value. Returns the set of changed keys."""
+    global MODE, CHANNEL, VOICE, LANGUAGE, OUTPUT_DEVICE, READ_USERNAME
+    global USERNAME_FORMAT, MIN_CHARS, MAX_CHARS, COOLDOWN_SECONDS
+    global TAIL_PADDING_SECONDS, IGNORED_USERS, IGNORE_PREFIXES, HTTP_HOST
+    global HTTP_PORT, SHOW_TRAY_ICON
+    global F_COLLAPSE_CHARS, F_MAX_CHAR_RUN, F_COLLAPSE_WORDS, F_MAX_WORD_REPEATS
+    global F_COLLAPSE_PHRASES, F_MAX_PHRASE_WORDS, F_MAX_PHRASE_REPEATS
+    global F_SKIP_SPAM, F_SPAM_MIN_WORDS, F_SPAM_RATIO, F_MAX_WORD_LENGTH
+    global F_BLOCK_REPEATS, F_COPYPASTA_FLOOD, F_COPYPASTA_WINDOW, F_COPYPASTA_MIN_USERS
+    global FB_ENABLED, FB_API_BASE, FB_ASYNC, FB_PRESETS
+
+    if not _startup:
+        _startup.update({k: v for k, v in values.items() if SCHEMA_BY_KEY[k].get("restart")})
+    v = {**values, **_startup}
+    changed = {k for k in v if _active.get(k, object()) != v[k]}
+    _active.clear()
+    _active.update(v)
+
+    MODE = v["mode"]
+    CHANNEL = v["channel"].lower().lstrip("#")
+    VOICE = v["voice"]
+    LANGUAGE = v["language"]
+    OUTPUT_DEVICE = v["output_device"]
+    READ_USERNAME = v["read_username"]
+    USERNAME_FORMAT = v["username_format"]
+    MIN_CHARS = v["min_chars"]
+    MAX_CHARS = v["max_chars"]
+    COOLDOWN_SECONDS = v["cooldown_seconds"]
+    TAIL_PADDING_SECONDS = v["tail_padding_seconds"]
+    IGNORED_USERS = {u.lower() for u in v["ignored_users"]}
+    IGNORE_PREFIXES = tuple(v["ignore_prefixes"])
+    HTTP_HOST = v["http_host"]
+    HTTP_PORT = v["http_port"]
+    SHOW_TRAY_ICON = v["show_tray_icon"]
+
+    # Optional anti-abuse filters
+    F_COLLAPSE_CHARS = v["filters.collapse_char_runs"]
+    F_MAX_CHAR_RUN = v["filters.max_char_run"]
+    F_COLLAPSE_WORDS = v["filters.collapse_word_repeats"]
+    F_MAX_WORD_REPEATS = v["filters.max_word_repeats"]
+    F_COLLAPSE_PHRASES = v["filters.collapse_phrase_repeats"]
+    F_MAX_PHRASE_WORDS = v["filters.max_phrase_words"]
+    F_MAX_PHRASE_REPEATS = v["filters.max_phrase_repeats"]
+    F_SKIP_SPAM = v["filters.skip_word_spam"]
+    F_SPAM_MIN_WORDS = v["filters.spam_min_words"]
+    F_SPAM_RATIO = v["filters.spam_ratio"]
+    F_MAX_WORD_LENGTH = v["filters.max_word_length"]            # 0 = off
+    F_BLOCK_REPEATS = v["filters.block_repeated_messages"]
+    F_COPYPASTA_FLOOD = v["filters.block_copypasta_flood"]
+    F_COPYPASTA_WINDOW = v["filters.copypasta_flood_window_seconds"]
+    F_COPYPASTA_MIN_USERS = v["filters.copypasta_flood_min_users"]
+
+    # Firebot actions
+    FB_ENABLED = v["firebot_actions.enabled"]
+    FB_API_BASE = v["firebot_actions.api_base"].rstrip("/")
+    FB_ASYNC = v["firebot_actions.async"]
+    FB_PRESETS = {name: v[f"firebot_actions.presets.{name}"] for name in FIREBOT_FILTERS
+                  if v[f"firebot_actions.presets.{name}"]}
+    return changed
+
+
+def restart_pending(values):
+    """Restart-only keys whose saved value differs from what's running."""
+    return [k for k, val in _startup.items() if values.get(k) != val]
+
+
+# ---------------------- Comment-preserving config writer ---------------------
+def _scan_members(raw):
+    """Locate object members in raw config text (which may contain // line
+    comments). Returns ({key: (start, end) of its value text},
+    {object key: position just after its last member, or after '{' if empty}).
+    Keys are dotted paths, "" is the top-level object."""
+    spans, ends = {}, {}
+    n, i = len(raw), 0
+
+    def skip_ws():
+        nonlocal i
+        while i < n:
+            if raw[i] in " \t\r\n":
+                i += 1
+            elif raw.startswith("//", i):
+                j = raw.find("\n", i)
+                i = n if j < 0 else j
+            else:
+                break
+
+    def string_end(j):
+        j += 1
+        while raw[j] != '"':
+            j += 2 if raw[j] == "\\" else 1
+        return j + 1
+
+    def value(path):
+        nonlocal i
+        skip_ws()
+        start = i
+        if raw[i] == "{":
+            i += 1
+            ends[path] = i
+            skip_ws()
+            if raw[i] == "}":
+                i += 1
+            else:
+                while True:
+                    skip_ws()
+                    k_end = string_end(i)
+                    key = json.loads(raw[i:k_end])
+                    i = k_end
+                    skip_ws()
+                    i += 1                                  # ':'
+                    value(f"{path}.{key}" if path else key)
+                    ends[path] = i
+                    skip_ws()
+                    i += 1                                  # ',' or '}'
+                    if raw[i - 1] == "}":
+                        break
+        elif raw[i] == "[":
+            i += 1
+            skip_ws()
+            if raw[i] == "]":
+                i += 1
+            else:
+                while True:
+                    value(None)
+                    skip_ws()
+                    i += 1                                  # ',' or ']'
+                    if raw[i - 1] == "]":
+                        break
+        elif raw[i] == '"':
+            i = string_end(i)
+        else:
+            i = re.compile(r"[-+\w.]+").match(raw, i).end()
+        if path is not None:
+            spans[path] = (start, i)
+
+    value("")
+    return spans, ends
+
+
+def write_config(updates):
+    """Write {dotted key: value} into config.json, replacing just those values
+    in place so the user's comments and layout survive. Keys missing from the
+    file are appended to their (possibly new) parent object."""
+    raw = CONFIG_FILE.read_text(encoding="utf-8") if CONFIG_FILE.exists() else "{\n}\n"
+    spans, ends = _scan_members(raw)
+    edits = []                    # (start, end, replacement)
+    inserts = {}                  # existing parent -> {missing key: value}
+    for key, val in updates.items():
+        if key in spans:
+            edits.append((*spans[key], json.dumps(val, ensure_ascii=False)))
+            continue
+        parts = key.split(".")
+        depth = len(parts) - 1
+        while ".".join(parts[:depth]) not in ends:
+            depth -= 1
+        node = inserts.setdefault(".".join(parts[:depth]), {})
+        for part in parts[depth:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = val
+    for parent, members in inserts.items():
+        pos = ends[parent]
+        indent = "  " * (parent.count(".") + 2 if parent else 1)
+        text = ("" if raw[pos - 1] == "{" else ",") + "".join(
+            f"{',' if idx else ''}\n{indent}{json.dumps(k)}: {json.dumps(v, ensure_ascii=False)}"
+            for idx, (k, v) in enumerate(members.items()))
+        if raw[pos - 1] == "{":
+            text += "\n" + indent[:-2]
+        edits.append((pos, pos, text))
+    for start, end, text in sorted(edits, key=lambda e: e[0], reverse=True):
+        raw = raw[:start] + text + raw[end:]
+    # Sanity check before touching the real file.
+    check = json.loads(_strip_comments(raw))
+    for key, val in updates.items():
+        if _get_path(check, key) != val:
+            raise ConfigError(f"couldn't write {key} into config.json")
+    tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+    tmp.write_text(raw, encoding="utf-8")
+    os.replace(tmp, CONFIG_FILE)
 
 
 # --------------------------- Load configuration ------------------------------
-_cfg = {**DEFAULTS, **_load_json(CONFIG_FILE, {}, allow_comments=True)}
-
-MODE = _cfg["mode"]
-CHANNEL = str(_cfg["channel"]).lower().lstrip("#")
-VOICE = _cfg["voice"]
-LANGUAGE = _cfg["language"]
-OUTPUT_DEVICE = _cfg["output_device"] or None
-READ_USERNAME = bool(_cfg["read_username"])
-USERNAME_FORMAT = _cfg["username_format"]
-MIN_CHARS = int(_cfg["min_chars"])
-MAX_CHARS = int(_cfg["max_chars"])
-COOLDOWN_SECONDS = float(_cfg["cooldown_seconds"])
-TAIL_PADDING_SECONDS = float(_cfg["tail_padding_seconds"])
-IGNORED_USERS = {str(u).lower() for u in _cfg["ignored_users"]}
-IGNORE_PREFIXES = tuple(_cfg["ignore_prefixes"])
-HTTP_HOST = _cfg["http_host"]
-HTTP_PORT = int(_cfg["http_port"])
-SHOW_TRAY_ICON = bool(_cfg["show_tray_icon"])
+try:
+    _values, _warnings = _read_config_file()
+except ConfigError as e:
+    raise SystemExit(str(e))
+for _w in _warnings:
+    print(f"[config] {_w}")
+_apply_config(_values)
 # -----------------------------------------------------------------------------
 
 TWITCH_WS = "wss://irc-ws.chat.twitch.tv:443"
@@ -213,17 +566,39 @@ _last_spoken: dict[str, float] = {}
 
 
 # --------------------------- Abbreviations / emotes --------------------------
-_abbr_raw = _load_json(ABBR_FILE, {})
-ABBREVIATIONS = {str(k).lower(): str(v) for k, v in _abbr_raw.items()} if _abbr_raw else {}
-_ABBR_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(k) for k in sorted(ABBREVIATIONS, key=len, reverse=True)) + r")\b",
-    re.IGNORECASE,
-) if ABBREVIATIONS else None
+ABBREVIATIONS: dict = {}
+EMOTES: list = []
+_ABBR_PATTERN = None
+_EMOTE_PATTERN = None
 
-_emote_list = _load_json(EMOTE_FILE, [])
-_EMOTE_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(e) for e in sorted(_emote_list, key=len, reverse=True)) + r")\b"
-) if _emote_list else None
+
+def _apply_word_lists(abbreviations, emotes):
+    global ABBREVIATIONS, EMOTES, _ABBR_PATTERN, _EMOTE_PATTERN
+    ABBREVIATIONS = {str(k).lower(): str(v) for k, v in abbreviations.items()}
+    EMOTES = [str(e) for e in emotes]
+    _ABBR_PATTERN = re.compile(
+        r"\b(" + "|".join(re.escape(k) for k in sorted(ABBREVIATIONS, key=len, reverse=True)) + r")\b",
+        re.IGNORECASE,
+    ) if ABBREVIATIONS else None
+    _EMOTE_PATTERN = re.compile(
+        r"\b(" + "|".join(re.escape(e) for e in sorted(EMOTES, key=len, reverse=True)) + r")\b"
+    ) if EMOTES else None
+
+
+def _read_word_lists():
+    abbreviations = _load_json(ABBR_FILE, {}) or {}
+    emotes = _load_json(EMOTE_FILE, []) or []
+    if not isinstance(abbreviations, dict):
+        raise ConfigError("abbreviations.json must contain a JSON object")
+    if not isinstance(emotes, list):
+        raise ConfigError("emotes.json must contain a JSON list")
+    return abbreviations, emotes
+
+
+try:
+    _apply_word_lists(*_read_word_lists())
+except ConfigError as e:
+    raise SystemExit(str(e))
 
 
 def expand_abbreviations(text):
@@ -265,23 +640,8 @@ def strip_native_emotes(message, emotes_tag):
 
 
 # ------------------------------ Abuse filters --------------------------------
-# All optional, each switchable via the "filters" block in config.json.
-_F = _cfg.get("filters", {}) or {}
-F_COLLAPSE_CHARS = bool(_F.get("collapse_char_runs", True))
-F_MAX_CHAR_RUN = max(1, int(_F.get("max_char_run", 3)))
-F_COLLAPSE_WORDS = bool(_F.get("collapse_word_repeats", True))
-F_MAX_WORD_REPEATS = max(1, int(_F.get("max_word_repeats", 3)))
-F_COLLAPSE_PHRASES = bool(_F.get("collapse_phrase_repeats", True))
-F_MAX_PHRASE_WORDS = max(2, int(_F.get("max_phrase_words", 4)))
-F_MAX_PHRASE_REPEATS = max(1, int(_F.get("max_phrase_repeats", 3)))
-F_SKIP_SPAM = bool(_F.get("skip_word_spam", False))
-F_SPAM_MIN_WORDS = int(_F.get("spam_min_words", 6))
-F_SPAM_RATIO = float(_F.get("spam_ratio", 0.6))
-F_MAX_WORD_LENGTH = int(_F.get("max_word_length", 0))            # 0 = off
-F_BLOCK_REPEATS = bool(_F.get("block_repeated_messages", False))
-F_COPYPASTA_FLOOD = bool(_F.get("block_copypasta_flood", False))
-F_COPYPASTA_WINDOW = float(_F.get("copypasta_flood_window_seconds", 20))
-F_COPYPASTA_MIN_USERS = max(2, int(_F.get("copypasta_flood_min_users", 3)))
+# All optional, each switchable via the "filters" block in config.json
+# (F_* values are set by _apply_config()).
 
 _last_message: dict[str, str] = {}
 _copypasta_history: deque = deque()   # (timestamp, normalized_text, user)
@@ -364,11 +724,7 @@ def _is_copypasta_flood(text, user):
 # When a filter fires, optionally trigger a Firebot preset effect list so you
 # can react (timeout, warn in chat, log, ...). Configured in config.json under
 # "firebot_actions"; each filter maps to a preset list ID (empty = no action).
-_FB = _cfg.get("firebot_actions", {}) or {}
-FB_ENABLED = bool(_FB.get("enabled", False))
-FB_API_BASE = str(_FB.get("api_base", "http://localhost:7472")).rstrip("/")
-FB_ASYNC = bool(_FB.get("async", True))
-FB_PRESETS = {k: str(v) for k, v in (_FB.get("presets", {}) or {}).items() if v}
+# Values (FB_ENABLED, FB_PRESETS, ...) are set by _apply_config().
 
 
 async def _post_firebot(preset_id, user, message, filter_name):
@@ -492,7 +848,8 @@ def _pick_playback_rate():
     """Some output devices (typically a raw ALSA device, not going through
     PipeWire/PulseAudio's automatic resampling) reject the TTS model's native
     sample rate outright (PortAudio error -9997 "Invalid sample rate").
-    Detect that once at startup and resample instead of failing every line."""
+    Detect that at startup (and when the device changes) and resample instead
+    of failing every line."""
     try:
         sd.check_output_settings(device=OUTPUT_DEVICE, samplerate=SAMPLE_RATE)
         return SAMPLE_RATE
@@ -577,11 +934,16 @@ def parse_privmsg(line):
     return login, display, message, tags.get("emotes", "")
 
 
+_chat_ws = None   # current Twitch connection; closed to rejoin after a channel change
+
+
 async def chat_listener():
+    global _chat_ws
     import websockets
     while True:
         try:
             async with websockets.connect(TWITCH_WS, ssl=_SSL_CONTEXT) as ws:
+                _chat_ws = ws
                 await ws.send("CAP REQ :twitch.tv/tags twitch.tv/commands")
                 await ws.send(f"NICK justinfan{random.randint(10000, 99999)}")
                 await ws.send(f"JOIN #{CHANNEL}")
@@ -610,6 +972,144 @@ async def chat_listener():
         except Exception as e:
             print(f"[Connection lost] {e} - retrying in 5 s ...")
             await asyncio.sleep(5)
+
+
+# ------------------------------ Config reload --------------------------------
+_reload_lock = asyncio.Lock()
+
+
+def _check_voice(name):
+    """Load a voice's state; raises ValueError if Pocket TTS doesn't know it."""
+    try:
+        return tts_model.get_state_for_audio_prompt(name)
+    except Exception as e:
+        # Pocket TTS treats an unknown name as an audio file path, so the raw
+        # error is about reading audio files - not helpful for a typo.
+        print(f"[config] voice {name!r} failed to load: {e}")
+        raise ValueError(f"unknown voice {name!r} (built-in voices include: "
+                         f"{', '.join(KNOWN_VOICES)})")
+
+
+def _check_output_device(device):
+    if device is None:
+        return
+    try:
+        sd.query_devices(device, "output")
+    except Exception as e:
+        raise ValueError(str(e))
+
+
+async def reload_config():
+    """Re-read config.json, abbreviations.json and emotes.json and apply them
+    to the running bot. Returns a summary dict for the panel / log."""
+    global voice_state, PLAYBACK_SAMPLE_RATE
+    loop = asyncio.get_running_loop()
+    async with _reload_lock:
+        values, warnings = _read_config_file()
+        word_lists = _read_word_lists()
+        old_voice_state = voice_state
+        if values["voice"] != VOICE:
+            try:
+                voice_state = await loop.run_in_executor(None, _check_voice, values["voice"])
+            except ValueError as e:
+                warnings.append(f"voice: {e} - keeping {VOICE!r}")
+                values["voice"] = VOICE
+        changed = _apply_config(values)
+        old_lists = (ABBREVIATIONS, EMOTES)
+        _apply_word_lists(*word_lists)
+        if ABBREVIATIONS != old_lists[0]:
+            changed.add("abbreviations")
+        if EMOTES != old_lists[1]:
+            changed.add("emotes")
+        if voice_state is not old_voice_state:
+            print(f"[config] voice switched to {VOICE}")
+        if "output_device" in changed:
+            PLAYBACK_SAMPLE_RATE = _pick_playback_rate()
+            print(f"[config] output device: {OUTPUT_DEVICE or 'default'}")
+        if "channel" in changed and _chat_ws is not None:
+            await _chat_ws.close()      # chat_listener reconnects to the new channel
+        pending = restart_pending(values)
+        for w in warnings:
+            print(f"[config] {w}")
+        print(f"[config] reloaded ({len(changed)} setting(s) changed)"
+              + (f", restart needed for: {', '.join(pending)}" if pending else ""))
+        return {"changed": sorted(changed), "warnings": warnings, "restart_pending": pending}
+
+
+async def save_config(updates, abbreviations=None, emotes=None):
+    """Validate panel edits, write them to the config files, then reload.
+    Raises ValueError with {key: message} on invalid input."""
+    loop = asyncio.get_running_loop()
+    errors, clean = {}, {}
+    for key, value in updates.items():
+        field = SCHEMA_BY_KEY.get(key)
+        if field is None:
+            errors[key] = "unknown setting"
+            continue
+        try:
+            clean[key] = _coerce(field, value, strict=True)
+        except ValueError as e:
+            errors[key] = str(e)
+    if "voice" in clean and clean["voice"] != VOICE:
+        try:
+            await loop.run_in_executor(None, _check_voice, clean["voice"])
+        except ValueError as e:
+            errors["voice"] = str(e)
+    if "output_device" in clean:
+        try:
+            _check_output_device(clean["output_device"])
+        except ValueError as e:
+            errors["output_device"] = str(e)
+    if abbreviations is not None and not (
+            isinstance(abbreviations, dict)
+            and all(isinstance(v, str) for v in abbreviations.values())):
+        errors["abbreviations"] = "must map each abbreviation to its expansion"
+    if emotes is not None and not (
+            isinstance(emotes, list) and all(isinstance(e, str) for e in emotes)):
+        errors["emotes"] = "must be a list of emote names"
+    if errors:
+        raise ValueError(errors)
+    async with _reload_lock:
+        if clean:
+            write_config(clean)
+        for path, data in ((ABBR_FILE, abbreviations), (EMOTE_FILE, emotes)):
+            if data is not None:
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                               encoding="utf-8")
+                os.replace(tmp, path)
+    return await reload_config()
+
+
+def _output_device_names():
+    try:
+        return sorted({d["name"] for d in sd.query_devices() if d["max_output_channels"] > 0})
+    except Exception:
+        return []
+
+
+def config_snapshot():
+    """Everything the settings page needs: schema, saved values, word lists,
+    and whether the saved files differ from what's running."""
+    snap = {"schema": CONFIG_SCHEMA, "running": _active,
+            "suggest": {"voices": KNOWN_VOICES, "devices": _output_device_names()},
+            "config_path": str(CONFIG_FILE)}
+    try:
+        values, warnings = _read_config_file()
+        abbreviations, emotes = _read_word_lists()
+    except ConfigError as e:
+        return {**snap, "error": str(e), "values": _active,
+                "abbreviations": ABBREVIATIONS, "emotes": EMOTES}
+    # Saved but not yet running, e.g. config.json was edited by hand.
+    unapplied = sorted(k for k, v in values.items()
+                       if not SCHEMA_BY_KEY[k].get("restart") and _active.get(k) != v)
+    if {str(k).lower(): str(v) for k, v in abbreviations.items()} != ABBREVIATIONS:
+        unapplied.append("abbreviations")
+    if [str(e) for e in emotes] != EMOTES:
+        unapplied.append("emotes")
+    return {**snap, "values": values, "warnings": warnings,
+            "abbreviations": abbreviations, "emotes": emotes,
+            "restart_pending": restart_pending(values), "unapplied": unapplied}
 
 
 # --------------------------- Control + HTTP server ---------------------------
@@ -667,8 +1167,51 @@ async def run_http():
         print(f"[clear] dropped {dropped} queued, aborted current")
         return web.Response(text=f"cleared {dropped}")
 
+    async def handle_panel(request):
+        return web.FileResponse(PANEL_HTML_PATH)
+
+    async def handle_config_get(request):
+        return web.json_response(config_snapshot())
+
+    async def handle_config_post(request):
+        if request.content_type != "application/json":
+            return web.json_response({"error": "expected application/json"}, status=415)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        try:
+            result = await save_config(body.get("values") or {},
+                                       body.get("abbreviations"), body.get("emotes"))
+        except ValueError as e:
+            return web.json_response({"errors": e.args[0]}, status=400)
+        except (ConfigError, OSError) as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response(result)
+
+    async def handle_reload(request):
+        try:
+            return web.json_response(await reload_config())
+        except ConfigError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    def _local_api_request(request):
+        # The settings API can rewrite config.json (e.g. the Firebot URL), so
+        # unlike /tts it must not be callable by other websites: no CORS, the
+        # Origin (if any) must be this server, and the Host must be an IP or
+        # "localhost" so a DNS-rebinding domain can't pose as same-origin.
+        host = request.url.host or ""
+        if host != "localhost" and not re.fullmatch(r"[\d.]+|\[?[0-9a-fA-F:]+\]?", host):
+            return False
+        origin = request.headers.get("Origin")
+        return origin is None or origin == f"{request.scheme}://{request.host}"
+
     @web.middleware
     async def _cors(request, handler):
+        if request.path.startswith("/api/"):
+            if not _local_api_request(request):
+                return web.json_response({"error": "forbidden"}, status=403)
+            return await handler(request)
         if request.method == "OPTIONS":
             resp = web.Response(status=204)
         else:
@@ -683,12 +1226,16 @@ async def run_http():
     app.router.add_route("*", "/skip", handle_skip)
     app.router.add_route("*", "/clear", handle_clear)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    app.router.add_get("/", handle_panel)
+    app.router.add_get("/api/config", handle_config_get)
+    app.router.add_post("/api/config", handle_config_post)
+    app.router.add_post("/api/reload", handle_reload)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, HTTP_HOST, HTTP_PORT)
     await site.start()
     base = f"http://{HTTP_HOST}:{HTTP_PORT}"
-    print(f"Control server: {base}/  (endpoints: /tts /skip /clear)")
+    print(f"Control panel: {base}/  (endpoints: /tts /skip /clear)")
     await asyncio.Event().wait()
 
 
@@ -726,7 +1273,7 @@ def _subprocess_env():
 
 
 def _open_path(path):
-    """Open a file/folder with the OS's default handler."""
+    """Open a file/folder/URL with the OS's default handler."""
     try:
         if sys.platform == "win32":
             os.startfile(path)  # noqa: S606
@@ -752,12 +1299,30 @@ def _tray_icon_image():
     return img
 
 
+def panel_url():
+    host = "127.0.0.1" if HTTP_HOST in ("0.0.0.0", "::", "") else HTTP_HOST
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{HTTP_PORT}/"
+
+
+async def _reload_from_tray():
+    try:
+        await reload_config()
+    except ConfigError as e:
+        print(f"[config] reload failed: {e}")
+
+
 def run_tray():
     """Blocking: runs the tray icon on the calling (main) thread."""
     import pystray
 
     def on_open_panel(icon, item):
-        _open_path(TEST_HTML_PATH)
+        _open_path(panel_url())
+
+    def on_reload(icon, item):
+        if _loop:
+            asyncio.run_coroutine_threadsafe(_reload_from_tray(), _loop)
 
     def on_open_config(icon, item):
         _open_path(APP_DIR)
@@ -780,6 +1345,7 @@ def run_tray():
     items = [
         pystray.MenuItem(f"Twitch TTS Bot ({MODE} mode)", None, enabled=False),
         pystray.MenuItem("Open TTS panel", on_open_panel),
+        pystray.MenuItem("Reload config", on_reload),
         pystray.MenuItem("Open config folder", on_open_config),
         pystray.MenuItem("Open log folder", on_open_log_folder),
         pystray.Menu.SEPARATOR,

@@ -2,7 +2,11 @@
   // ============================================================
   //  Twitch TTS Bot - configuration
   //  Lines starting with // are comments and are ignored.
-  //  Edit a value, save, then restart the bot.
+  //  Easiest: change settings on the control panel's Settings tab
+  //  (http://127.0.0.1:5050/). Or edit a value here, save, and click
+  //  "Reload from file" on the panel / "Reload config" in the tray menu.
+  //  mode, language, http_host, http_port and show_tray_icon only take
+  //  effect after a restart.
   // ============================================================
 
   // "twitch" = read your Twitch chat directly
@@ -124,7 +128,9 @@
       "long_word": "",
       "repeated_message": "",
       "char_run": "",
-      "word_repeat": ""
+      "word_repeat": "",
+      "phrase_repeat": "",
+      "copypasta_flood": ""
     }
   },
 

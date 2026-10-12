@@ -23,9 +23,9 @@ automatically by GitHub Actions.
 - Installs **CPU-only PyTorch** (the default wheel bundles CUDA and is huge).
 - Freezes the app with **PyInstaller** using `packaging/tts_bot.spec`, built
   windowless (`console=False`) since the bot runs as a **system-tray app**:
-  the tray menu (via `pystray`) has Open TTS panel (the `test.html` control
-  page), Open config folder, Open log folder, Skip current, Clear queue, and
-  Quit. Set `"show_tray_icon": false` in `config.json` to run as a plain
+  the tray menu (via `pystray`) has Open TTS panel (the control panel the
+  bot serves at http://127.0.0.1:5050/), Reload config, Open config folder,
+  Open log folder, Skip current, Clear queue, and Quit. Set `"show_tray_icon": false` in `config.json` to run as a plain
   console app instead; it also falls back to console mode automatically if
   the tray backend can't start (e.g. headless Linux with no display).
 - Since there's no console window, all `print()` output goes to a log file

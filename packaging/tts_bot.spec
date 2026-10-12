@@ -43,7 +43,7 @@ datas += [
     (root("config.example.json"), "."),
     (root("abbreviations.json"), "."),
     (root("emotes.json"), "."),
-    (root("test.html"), "."),
+    (root("panel.html"), "."),
     (root("README.md"), "."),
 ]
 

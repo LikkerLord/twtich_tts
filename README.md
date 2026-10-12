@@ -9,7 +9,7 @@ one-time model download it runs fully offline.
 |---|---|
 | `tts_bot.py` | The bot (same on every OS). |
 | `config.example.json` | Settings template. Setup copies this to `config.json` on first run - edit `config.json`, not this file. |
-| `test.html` | Open in a browser to test `/tts` `/skip` `/clear`. |
+| `panel.html` | The control panel the bot serves at http://127.0.0.1:5050/ (test speech, change settings). |
 | `abbreviations.json` | Optional: chat shorthand -> spoken words. |
 | `emotes.json` | Optional: third-party emotes to skip. |
 
@@ -64,8 +64,16 @@ Then write a message in your chat to test. Close the window / Ctrl+C to stop.
 
 ## Settings
 
-Edit `config.json` (annotated; `//` lines are comments), save, restart the
-bot.
+Open the control panel at http://127.0.0.1:5050/ (or "Open TTS panel" in
+the tray menu) and use the **Settings** tab. "Save & apply" writes your
+changes to `config.json` (comments and layout are kept) and applies them
+right away. A few settings (`mode`, `language`, `http_host`, `http_port`,
+`show_tray_icon`) are marked *restart* and only take effect after restarting
+the bot. The same tab edits `abbreviations.json` and `emotes.json`.
+
+You can still edit `config.json` by hand (annotated; `//` lines are
+comments): save it, then click "Reload from file" on the panel or "Reload
+config" in the tray menu. No restart needed.
 
 - `mode` - `"twitch"` (read chat) or `"http"` (Firebot, Mix It Up, or anything
   else sends text)
@@ -75,7 +83,8 @@ bot.
   word spam, cross-user copypasta floods)
 - `firebot_actions` - optional: run a Firebot preset when a filter fires
 - `show_tray_icon` - true (default): also show a system-tray icon with
-  Open TTS panel / Open config folder / Open log folder / Skip / Clear / Quit
+  Open TTS panel / Reload config / Open config folder / Open log folder /
+  Skip / Clear / Quit
 
 ## Control (works in both modes)
 
