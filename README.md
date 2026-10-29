@@ -1,5 +1,14 @@
 # Twitch TTS Bot
 
+> [!IMPORTANT]
+> **This project has moved and is now called Tellbird:
+> [github.com/LikkerLord/tellbird](https://github.com/LikkerLord/tellbird)**
+>
+> This repository is no longer updated. If you used the installer, your
+> settings carry over: Tellbird picks up your existing configuration
+> automatically. If you ran it from source, copy your `config.json`,
+> `abbreviations.json` and `emotes.json` into the Tellbird folder.
+
 Reads your Twitch chat aloud with a local text-to-speech voice. After a
 one-time model download it runs fully offline.
 
